@@ -1,6 +1,6 @@
 # MinIO Proxy
 
-A simple Go proxy server between your frontend and MinIO. Handles GET (download) and POST (upload) requests.
+A simple Go proxy server between your frontend and MinIO. Handles single and batch GET, POST, PUT, DELETE—batch operations use goroutines for parallel execution.
 
 ## Configuration
 
@@ -14,6 +14,7 @@ Set these environment variables (or create a `.env` and source it):
 | `MINIO_BUCKET` | Bucket name | `mybucket` |
 | `MINIO_USE_SSL` | Use HTTPS for MinIO | `false` |
 | `LISTEN_ADDR` | Proxy listen address | `:8080` |
+| `API_KEY` | If set, all requests (except `/health`) must include `X-API-Key` or `Authorization: Bearer <key>` | *(disabled)* |
 
 ## Run
 
@@ -35,6 +36,18 @@ air
 ```
 
 ## API
+
+### Authentication
+
+When `API_KEY` is set, include it in every request (except `/health`):
+
+```bash
+curl -H "X-API-Key: your-secret-key" http://localhost:8080/objects/photos/avatar.jpg
+# or
+curl -H "Authorization: Bearer your-secret-key" http://localhost:8080/objects/photos/avatar.jpg
+```
+
+---
 
 ### GET `/objects/{path}`
 
@@ -76,6 +89,58 @@ await fetch('/objects/photos/myfile.jpg', {
   body: form
 });
 ```
+
+### PUT `/objects/{path}`
+
+Overwrite an object (same as POST).
+
+### DELETE `/objects/{path}`
+
+Delete an object from MinIO.
+
+```bash
+curl -X DELETE http://localhost:8080/objects/photos/old.jpg
+```
+
+---
+
+### Batch (parallel via goroutines)
+
+#### GET `/batch?keys=key1,key2,...`
+
+Fetch multiple objects. Returns `multipart/mixed` with each object as a part.
+
+```bash
+curl "http://localhost:8080/batch?keys=img1.jpg,img2.jpg" -o response.bin
+```
+
+#### POST `/batch`
+
+Upload multiple files. Form: `keys` (comma-separated) + `files` (or `file`) multipart.
+
+```bash
+curl -X POST -F "keys=path/a.jpg,path/b.jpg" -F "files=@a.jpg" -F "files=@b.jpg" \
+  http://localhost:8080/batch
+```
+
+Frontend:
+```js
+const form = new FormData();
+form.append('keys', 'img1.jpg,img2.jpg');
+form.append('files', file1);
+form.append('files', file2);
+await fetch('/batch', { method: 'POST', body: form });
+```
+
+#### DELETE `/batch?keys=key1,key2,...`
+
+Delete multiple objects in parallel.
+
+```bash
+curl -X DELETE "http://localhost:8080/batch?keys=old1.jpg,old2.jpg"
+```
+
+---
 
 ### GET `/health`
 
