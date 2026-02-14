@@ -122,7 +122,6 @@ func batchGet(client *minio.Client, bucket string, w http.ResponseWriter, r *htt
 
 	for _, res := range results {
 		if res.err != nil {
-			log.Printf("batch GET %q: %v", res.key, res.err)
 			continue
 		}
 		part, _ := mpw.CreatePart(map[string][]string{
@@ -250,13 +249,22 @@ func batchDelete(client *minio.Client, bucket string, w http.ResponseWriter, r *
 	json.NewEncoder(w).Encode(map[string]any{"deleted": results})
 }
 
-func debugList(client *minio.Client, bucket string) http.HandlerFunc {
+// objectLister abstracts MinIO ListObjects for testability.
+type objectLister interface {
+	ListObjects(ctx context.Context, bucket string, opts minio.ListObjectsOptions) <-chan minio.ObjectInfo
+}
+
+func debugList(client objectLister, bucket string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		/* prefix is the folder -> http://localhost:9004/debug/list?prefix=kzen/ */
 		prefix := r.URL.Query().Get("prefix")
+
+		log.Printf("debugList: %s", prefix)
+
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 

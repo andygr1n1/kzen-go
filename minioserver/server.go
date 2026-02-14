@@ -9,7 +9,6 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
-// Config holds the MinIO proxy server configuration.
 type Config struct {
 	Endpoint  string
 	AccessKey string
@@ -20,7 +19,6 @@ type Config struct {
 	APIKey    string
 }
 
-// Run starts the MinIO proxy server.
 func Run(cfg Config) error {
 	cfg.Endpoint = strings.TrimPrefix(strings.TrimPrefix(cfg.Endpoint, "https://"), "http://")
 	if i := strings.Index(cfg.Endpoint, "/"); i != -1 {
