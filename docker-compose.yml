@@ -1,0 +1,25 @@
+services:
+  minio-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - LISTEN_ADDR=:8080
+    ports:
+      - "8080"
+    networks:
+      - dokploy-network
+    # Configure domain via Dokploy UI → Domains tab, or uncomment labels:
+    # labels:
+    #   - "traefik.enable=true"
+    #   - "traefik.http.routers.minio-proxy.rule=Host(`your-domain.com`)"
+    #   - "traefik.http.routers.minio-proxy.entrypoints=websecure"
+    #   - "traefik.http.routers.minio-proxy.tls.certResolver=letsencrypt"
+    #   - "traefik.http.services.minio-proxy.loadbalancer.server.port=8080"
+
+networks:
+  dokploy-network:
+    external: true

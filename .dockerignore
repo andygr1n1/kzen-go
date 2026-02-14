@@ -1,0 +1,9 @@
+.git
+.env
+.env.*
+*.md
+tmp/
+minio-proxy
+kzen-go
+docker-compose*.yml
+.air.toml

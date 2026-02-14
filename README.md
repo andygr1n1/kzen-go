@@ -35,6 +35,16 @@ Dev mode (live reload with [air](https://github.com/air-verse/air)):
 air
 ```
 
+## Docker / Dokploy
+
+```bash
+docker compose up -d
+```
+
+For [Dokploy](https://dokploy.com): create a Compose app, point to this repo, set Compose path to `./docker-compose.yml`. Add `.env` with your MinIO settings. Use the Domains tab to attach a domain.
+
+**Note:** When running in Docker, set `MINIO_ENDPOINT` to the host-accessible address of your MinIO (e.g. `host.docker.internal:9004` on Docker Desktop, or the KVM host IP).
+
 ## API
 
 ### Authentication
