@@ -306,7 +306,8 @@ func proxyGet(client *minio.Client, bucket string) http.HandlerFunc {
 
 		info, err := obj.Stat()
 		if err != nil {
-			log.Printf("stat object %q: %v", objectKey, err)
+			log.Printf("stat object %q bucket=%q: %v", objectKey, bucket, err)
+			w.Header().Set("X-MinIO-Error", err.Error())
 			http.Error(w, "failed to get object info", http.StatusInternalServerError)
 			return
 		}

@@ -25,6 +25,13 @@ func apiKeyMiddleware(apiKey string) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+
+			// if GET request, no need to check api key
+			if r.Method == http.MethodGet {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			key := r.Header.Get("X-API-Key")
 			if key == "" {
 				key = r.Header.Get("Authorization")
