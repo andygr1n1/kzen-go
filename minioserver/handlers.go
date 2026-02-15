@@ -284,6 +284,9 @@ func debugList(client objectLister, bucket string) http.HandlerFunc {
 	}
 }
 
+const statRetries = 3
+const statRetryDelay = 50 * time.Millisecond
+
 func proxyGet(client *minio.Client, bucket string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		objectKey := strings.TrimPrefix(r.URL.Path, "/objects/")
@@ -295,6 +298,33 @@ func proxyGet(client *minio.Client, bucket string) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
+		// StatObject can intermittently return "Access Denied" under concurrent load.
+		// Retry a few times before failing.
+		var info minio.ObjectInfo
+		var err error
+		for attempt := 0; attempt < statRetries; attempt++ {
+			info, err = client.StatObject(ctx, bucket, objectKey, minio.StatObjectOptions{})
+			if err == nil {
+				break
+			}
+			if !strings.Contains(err.Error(), "Access Denied") {
+				break
+			}
+			if attempt < statRetries-1 {
+				time.Sleep(statRetryDelay)
+			}
+		}
+		if err != nil {
+			log.Printf("stat object %q bucket=%q: %v", objectKey, bucket, err)
+			w.Header().Set("X-MinIO-Error", err.Error())
+			if strings.Contains(err.Error(), "does not exist") {
+				http.Error(w, "object not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "failed to get object info", http.StatusInternalServerError)
+			return
+		}
+
 		obj, err := client.GetObject(ctx, bucket, objectKey, minio.GetObjectOptions{})
 		if err != nil {
 			log.Printf("GET %q bucket=%q err: %v", objectKey, bucket, err)
@@ -303,14 +333,6 @@ func proxyGet(client *minio.Client, bucket string) http.HandlerFunc {
 			return
 		}
 		defer obj.Close()
-
-		info, err := obj.Stat()
-		if err != nil {
-			log.Printf("stat object %q bucket=%q: %v", objectKey, bucket, err)
-			w.Header().Set("X-MinIO-Error", err.Error())
-			http.Error(w, "failed to get object info", http.StatusInternalServerError)
-			return
-		}
 
 		if info.ContentType != "" {
 			w.Header().Set("Content-Type", info.ContentType)
