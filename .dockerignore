@@ -3,7 +3,7 @@
 .env.*
 *.md
 tmp/
-minio-proxy
+kzen-go
 kzen-go
 docker-compose*.yml
 .air.toml

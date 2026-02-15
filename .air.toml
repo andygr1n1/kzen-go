@@ -2,8 +2,8 @@ root = "."
 tmp_dir = "tmp"
 
 [build]
-  cmd = "go build -o ./tmp/minio-proxy ."
-  entrypoint = ["./tmp/minio-proxy"]
+  cmd = "go build -o ./tmp/kzen-go ."
+  entrypoint = ["./tmp/kzen-go"]
   exclude_dir = ["tmp", "vendor", ".git"]
   exclude_file = []
   exclude_regex = [".*_test.go"]

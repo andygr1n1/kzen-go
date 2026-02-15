@@ -6,15 +6,15 @@ A simple Go proxy server between your frontend and MinIO. Handles single and bat
 
 Set these environment variables (or create a `.env` and source it):
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `MINIO_ENDPOINT` | MinIO server (e.g. `kvm.local:9000`) | `localhost:9000` |
-| `MINIO_ACCESS_KEY` | MinIO access key | `minioadmin` |
-| `MINIO_SECRET_KEY` | MinIO secret key | `minioadmin` |
-| `MINIO_BUCKET` | Bucket name | `mybucket` |
-| `MINIO_USE_SSL` | Use HTTPS for MinIO | `false` |
-| `LISTEN_ADDR` | Proxy listen address | `:8080` |
-| `API_KEY` | If set, all requests (except `/health`) must include `X-API-Key` or `Authorization: Bearer <key>` | *(disabled)* |
+| Variable           | Description                                                                                       | Default          |
+| ------------------ | ------------------------------------------------------------------------------------------------- | ---------------- |
+| `MINIO_ENDPOINT`   | MinIO server (e.g. `kvm.local:9000`)                                                              | `localhost:9000` |
+| `MINIO_ACCESS_KEY` | MinIO access key                                                                                  | `minioadmin`     |
+| `MINIO_SECRET_KEY` | MinIO secret key                                                                                  | `minioadmin`     |
+| `MINIO_BUCKET`     | Bucket name                                                                                       | `mybucket`       |
+| `MINIO_USE_SSL`    | Use HTTPS for MinIO                                                                               | `false`          |
+| `LISTEN_ADDR`      | Proxy listen address                                                                              | `:8080`          |
+| `API_KEY`          | If set, all requests (except `/health`) must include `X-API-Key` or `Authorization: Bearer <key>` | _(disabled)_     |
 
 ## Run
 
@@ -25,12 +25,14 @@ go run .
 ```
 
 Or build and run:
+
 ```bash
-go build -o minio-proxy .
-./minio-proxy
+go build -o kzen-go .
+./kzen-go
 ```
 
 Dev mode (live reload with [air](https://github.com/air-verse/air)):
+
 ```bash
 air
 ```
@@ -68,9 +70,10 @@ curl http://localhost:8080/objects/photos/avatar.jpg -o avatar.jpg
 ```
 
 Frontend:
+
 ```js
-const res = await fetch('/objects/photos/avatar.jpg');
-const blob = await res.blob();
+const res = await fetch('/objects/photos/avatar.jpg')
+const blob = await res.blob()
 ```
 
 ### POST `/objects/{path}`
@@ -82,22 +85,24 @@ curl -X POST -T myfile.jpg http://localhost:8080/objects/photos/myfile.jpg
 ```
 
 Frontend (raw body):
+
 ```js
 await fetch('/objects/photos/myfile.jpg', {
-  method: 'POST',
-  body: file,
-  headers: { 'Content-Type': file.type }
-});
+    method: 'POST',
+    body: file,
+    headers: { 'Content-Type': file.type },
+})
 ```
 
 Frontend (multipart form):
+
 ```js
-const form = new FormData();
-form.append('file', file);
+const form = new FormData()
+form.append('file', file)
 await fetch('/objects/photos/myfile.jpg', {
-  method: 'POST',
-  body: form
-});
+    method: 'POST',
+    body: form,
+})
 ```
 
 ### PUT `/objects/{path}`
@@ -134,12 +139,13 @@ curl -X POST -F "keys=path/a.jpg,path/b.jpg" -F "files=@a.jpg" -F "files=@b.jpg"
 ```
 
 Frontend:
+
 ```js
-const form = new FormData();
-form.append('keys', 'img1.jpg,img2.jpg');
-form.append('files', file1);
-form.append('files', file2);
-await fetch('/batch', { method: 'POST', body: form });
+const form = new FormData()
+form.append('keys', 'img1.jpg,img2.jpg')
+form.append('files', file1)
+form.append('files', file2)
+await fetch('/batch', { method: 'POST', body: form })
 ```
 
 #### DELETE `/batch?keys=key1,key2,...`
