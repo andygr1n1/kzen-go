@@ -1,3 +1,14 @@
 {
-    "cSpell.words": ["davecgh", "difflib", "gofuzz", "golib", "minioserver", "objx", "pmezard", "stretchr"]
+    "cSpell.words": [
+        "Catmull",
+        "davecgh",
+        "difflib",
+        "gofuzz",
+        "golib",
+        "minioserver",
+        "objx",
+        "pmezard",
+        "stretchr",
+        "xdraw"
+    ]
 }

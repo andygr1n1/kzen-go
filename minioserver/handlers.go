@@ -1,18 +1,26 @@
 package minioserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
+	xdraw "golang.org/x/image/draw"
 )
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -394,6 +402,298 @@ func proxyPost(client *minio.Client, bucket string) http.HandlerFunc {
 
 func proxyPut(client *minio.Client, bucket string) http.HandlerFunc {
 	return proxyPost(client, bucket)
+}
+
+// resizeToFit scales img to fit within maxW×maxH while preserving aspect ratio.
+// If the image already fits, it is returned unchanged (no enlargement).
+func resizeToFit(img image.Image, maxW, maxH int) image.Image {
+	bounds := img.Bounds()
+	origW := bounds.Dx()
+	origH := bounds.Dy()
+	if origW <= maxW && origH <= maxH {
+		return img
+	}
+
+	scaleW := float64(maxW) / float64(origW)
+	scaleH := float64(maxH) / float64(origH)
+	scale := scaleW
+	if scaleH < scaleW {
+		scale = scaleH
+	}
+
+	newW := int(float64(origW) * scale)
+	newH := int(float64(origH) * scale)
+	if newW < 1 {
+		newW = 1
+	}
+	if newH < 1 {
+		newH = 1
+	}
+
+	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), img, bounds, xdraw.Over, nil)
+	return dst
+}
+
+// processRasterImage decodes a raster image, resizes it to fit within 1920×1080
+// (without enlargement), and encodes it as JPEG (quality 100).
+// Falls back to JPEG-only (no resize) on resize error, or raw bytes on total failure.
+func processRasterImage(data []byte, filename string) ([]byte, string) {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		log.Printf("uploadImages: decode %q failed: %v, uploading raw", filename, err)
+		return data, "application/octet-stream"
+	}
+
+	resized := resizeToFit(img, 1920, 1080)
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, resized, &jpeg.Options{Quality: 100}); err != nil {
+		log.Printf("uploadImages: jpeg encode %q failed: %v, trying without resize", filename, err)
+		buf.Reset()
+		// Fallback: encode original without resize
+		if err2 := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 100}); err2 != nil {
+			log.Printf("uploadImages: fallback encode %q also failed: %v, uploading raw", filename, err2)
+			return data, "application/octet-stream"
+		}
+	}
+	return buf.Bytes(), "image/jpeg"
+}
+
+// Accepts multipart form: files (multiple), userId, folder, imgPathsToDelete (comma-separated, optional),
+// imgPaths (comma-separated, optional), ids (comma-separated, optional), or imgPath/id (singular). When imgPaths and ids are provided
+// in same order as files, they are used as object paths; otherwise a new filename is generated.
+// img_path already includes the extension (e.g. userId_id_folder.jpeg).
+// When folderPrefix is provided, it is prepended to all MinIO object keys (uploads and deletes).
+// Old images listed in imgPathsToDelete are removed.
+// All uploads and deletes run concurrently.
+// Returns on 200: { inserted: [{id, img_path}], deleted: [img_path1, img_path2, ...] }
+func uploadImagesToMinioServer(client *minio.Client, bucket string, folderPrefix string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if err := r.ParseMultipartForm(50 << 20); err != nil {
+			respondJSON(w, http.StatusInternalServerError, map[string]any{"msg": "kZenUploadImagesToMinioServer:parse form error"})
+			return
+		}
+
+		userId := strings.TrimSpace(r.FormValue("userId"))
+		folder := strings.TrimSpace(r.FormValue("folder"))
+		imgPathsToDeleteStr := strings.TrimSpace(r.FormValue("imgPathsToDelete"))
+		imgPathsStr := strings.TrimSpace(r.FormValue("imgPaths"))
+		idsStr := strings.TrimSpace(r.FormValue("ids"))
+
+		if userId == "" {
+			respondJSON(w, http.StatusInternalServerError, map[string]any{"msg": "kZenUploadImagesToMinioServer:bad data"})
+			return
+		}
+		if folder == "" {
+			respondJSON(w, http.StatusInternalServerError, map[string]any{"msg": "kZenUploadImagesToMinioServer:folder is required"})
+			return
+		}
+
+		var imgPathsToDelete []string
+		if imgPathsToDeleteStr != "" {
+			for _, p := range strings.Split(imgPathsToDeleteStr, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					imgPathsToDelete = append(imgPathsToDelete, p)
+				}
+			}
+		}
+
+		var imgPaths []string
+		if imgPathsStr != "" {
+			for _, p := range strings.Split(imgPathsStr, ",") {
+				p = strings.TrimSpace(p)
+				imgPaths = append(imgPaths, p)
+			}
+		} else if r.MultipartForm != nil && r.MultipartForm.Value != nil && r.MultipartForm.Value["imgPath"] != nil {
+			imgPaths = r.MultipartForm.Value["imgPath"]
+		} else if imgPathStr := strings.TrimSpace(r.FormValue("imgPath")); imgPathStr != "" {
+			imgPaths = []string{imgPathStr}
+		}
+		var ids []string
+		if idsStr != "" {
+			for _, id := range strings.Split(idsStr, ",") {
+				ids = append(ids, strings.TrimSpace(id))
+			}
+		} else if r.MultipartForm != nil && r.MultipartForm.Value != nil && r.MultipartForm.Value["id"] != nil {
+			ids = r.MultipartForm.Value["id"]
+		} else if idStr := strings.TrimSpace(r.FormValue("id")); idStr != "" {
+			ids = []string{idStr}
+		}
+
+		// Use ordered files from "files", "file", or "binary" field.
+		var fileHeaders []*multipart.FileHeader
+		if r.MultipartForm != nil && r.MultipartForm.File != nil {
+			fileHeaders = r.MultipartForm.File["files"]
+			if len(fileHeaders) == 0 {
+				fileHeaders = r.MultipartForm.File["file"]
+			}
+			if len(fileHeaders) == 0 {
+				fileHeaders = r.MultipartForm.File["binary"]
+			}
+		}
+		if len(fileHeaders) == 0 {
+			respondJSON(w, http.StatusInternalServerError, map[string]any{"msg": "kZenUploadImagesToMinioServer:no files"})
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+		defer cancel()
+
+		type uploadResult struct {
+			imgPath string // final img_path (used for object key or returned to client)
+			id      string
+			err     error
+		}
+		results := make([]uploadResult, len(fileHeaders))
+		deleteErrors := make([]error, len(imgPathsToDelete))
+		deletedPaths := make([]string, len(imgPathsToDelete))
+		var wg sync.WaitGroup
+
+		// Upload each file concurrently.
+		for i, fh := range fileHeaders {
+			wg.Add(1)
+			imgPath := ""
+			if i < len(imgPaths) {
+				imgPath = imgPaths[i]
+			}
+			id := ""
+			if i < len(ids) {
+				id = ids[i]
+			}
+			go func(idx int, fh *multipart.FileHeader, imgPath, id string) {
+				defer wg.Done()
+
+				f, err := fh.Open()
+				if err != nil {
+					results[idx] = uploadResult{err: fmt.Errorf("open %q: %w", fh.Filename, err)}
+					return
+				}
+				defer f.Close()
+
+				isSvg := fh.Header.Get("Content-Type") == "image/svg+xml" ||
+					strings.HasSuffix(strings.ToLower(fh.Filename), ".svg")
+
+				var objectData []byte
+				var contentType string
+				var ext string
+
+				if isSvg {
+					objectData, err = io.ReadAll(f)
+					if err != nil {
+						results[idx] = uploadResult{err: fmt.Errorf("read %q: %w", fh.Filename, err)}
+						return
+					}
+					contentType = "image/svg+xml"
+					ext = ".svg"
+				} else {
+					raw, err := io.ReadAll(f)
+					if err != nil {
+						results[idx] = uploadResult{err: fmt.Errorf("read %q: %w", fh.Filename, err)}
+						return
+					}
+					objectData, contentType = processRasterImage(raw, fh.Filename)
+					if contentType == "image/jpeg" {
+						ext = ".jpeg"
+					} else {
+						ext = path.Ext(fh.Filename)
+						if ext == "" {
+							ext = ".bin"
+						}
+					}
+				}
+
+				var objectKey string
+				var finalImgPath string
+				if imgPath != "" {
+					finalImgPath = imgPath
+					objectKey = path.Join(folder, imgPath)
+				} else {
+					fileName := fmt.Sprintf("%s_%s_%s%s", userId, uuid.New().String(), folder, ext)
+					finalImgPath = fileName
+					objectKey = path.Join(folder, fileName)
+				}
+				if folderPrefix != "" {
+					prefix := strings.TrimPrefix(folderPrefix, "/")
+					objectKey = path.Join(prefix, objectKey)
+				}
+
+				_, err = client.PutObject(ctx, bucket, objectKey,
+					bytes.NewReader(objectData), int64(len(objectData)),
+					minio.PutObjectOptions{ContentType: contentType})
+				if err != nil {
+					results[idx] = uploadResult{err: fmt.Errorf("put %q: %w", objectKey, err)}
+					return
+				}
+				results[idx] = uploadResult{imgPath: finalImgPath, id: id}
+			}(i, fh, imgPath, id)
+		}
+
+		// Delete old images concurrently. imgPathsToDelete: full keys (folder/path) or filenames (path only).
+		for i, p := range imgPathsToDelete {
+			wg.Add(1)
+			objKey := p
+			if p != "" && !strings.Contains(p, "/") {
+				objKey = path.Join(folder, p)
+			}
+			if folderPrefix != "" {
+				prefix := strings.TrimPrefix(folderPrefix, "/")
+				objKey = path.Join(prefix, objKey)
+			}
+			go func(idx int, delKey string) {
+				defer wg.Done()
+				if err := client.RemoveObject(ctx, bucket, delKey, minio.RemoveObjectOptions{}); err != nil {
+					errStr := err.Error()
+					if strings.Contains(errStr, "does not exist") || strings.Contains(errStr, "NoSuchKey") {
+						log.Printf("uploadImages: path to delete not found (skipping): %q", delKey)
+						return
+					}
+					deleteErrors[idx] = fmt.Errorf("delete %q: %w", delKey, err)
+					return
+				}
+				deletedPaths[idx] = p // return original path as sent by client
+			}(i, objKey)
+		}
+
+		wg.Wait()
+
+		for _, res := range results {
+			if res.err != nil {
+				log.Printf("uploadImages: %v", res.err)
+				respondJSON(w, http.StatusInternalServerError, map[string]any{"msg": "kZenUploadImagesToMinioServer:upload error"})
+				return
+			}
+		}
+		for _, err := range deleteErrors {
+			if err != nil {
+				log.Printf("uploadImages: %v", err)
+				respondJSON(w, http.StatusInternalServerError, map[string]any{"msg": "kZenUploadImagesToMinioServer:delete error"})
+				return
+			}
+		}
+
+		inserted := make([]map[string]string, 0, len(results))
+		for _, res := range results {
+			inserted = append(inserted, map[string]string{"id": res.id, "img_path": res.imgPath})
+		}
+		deleted := make([]string, 0, len(deletedPaths))
+		for _, p := range deletedPaths {
+			if p != "" {
+				deleted = append(deleted, p)
+			}
+		}
+		respondJSON(w, http.StatusOK, map[string]any{"inserted": inserted, "deleted": deleted})
+	}
+}
+
+func respondJSON(w http.ResponseWriter, status int, v any) {
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
 }
 
 func proxyDelete(client *minio.Client, bucket string) http.HandlerFunc {

@@ -1,6 +1,7 @@
 package minioserver
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -19,6 +20,10 @@ type Config struct {
 	Listen    string
 	APIKey    string
 }
+
+const (
+	KZEN_STORAGE = "kzen-storage"
+)
 
 func Run(cfg Config) error {
 	cfg.Endpoint = strings.TrimPrefix(strings.TrimPrefix(cfg.Endpoint, "https://"), "http://")
@@ -48,6 +53,10 @@ func Run(cfg Config) error {
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/health/", healthHandler)
 	mux.HandleFunc("/debug/list", debugList(client, cfg.Bucket))
+	/* kzen */
+	mux.HandleFunc(fmt.Sprintf("/%s-objects/", KZEN_STORAGE), objectsHandler(client, KZEN_STORAGE))
+	mux.HandleFunc(fmt.Sprintf("/%s-upload-images", KZEN_STORAGE), uploadImagesToMinioServer(client, KZEN_STORAGE, "/kzen"))
+	mux.HandleFunc(fmt.Sprintf("/%s-debug-list", KZEN_STORAGE), debugList(client, KZEN_STORAGE))
 
 	handler := Chain(corsMiddleware, logMiddleware)(mux)
 	if cfg.APIKey != "" {
