@@ -66,11 +66,13 @@ func apiKeyMiddleware(apiKey string) func(http.Handler) http.Handler {
 	}
 }
 
+// corsMiddleware follows the standard CORS pattern: set headers on every response,
+// reply to OPTIONS (preflight) without calling the handler, then pass through.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setCORSHeaders(w)
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusNoContent)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK) // 200; preflight success, no body (204 also valid)
 			return
 		}
 		next.ServeHTTP(w, r)
