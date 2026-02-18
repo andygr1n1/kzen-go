@@ -29,10 +29,14 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func objectsHandler(client *minio.Client, bucket string) http.HandlerFunc {
-	get := proxyGet(client, bucket)
-	post := proxyPost(client, bucket)
-	put := proxyPut(client, bucket)
-	del := proxyDelete(client, bucket)
+	return objectsHandlerWithPrefix(client, bucket, "/objects/")
+}
+
+func objectsHandlerWithPrefix(client *minio.Client, bucket string, pathPrefix string) http.HandlerFunc {
+	get := proxyGetWithPrefix(client, bucket, pathPrefix)
+	post := proxyPostWithPrefix(client, bucket, pathPrefix)
+	put := proxyPutWithPrefix(client, bucket, pathPrefix)
+	del := proxyDeleteWithPrefix(client, bucket, pathPrefix)
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -296,8 +300,12 @@ const statRetries = 3
 const statRetryDelay = 50 * time.Millisecond
 
 func proxyGet(client *minio.Client, bucket string) http.HandlerFunc {
+	return proxyGetWithPrefix(client, bucket, "/objects/")
+}
+
+func proxyGetWithPrefix(client *minio.Client, bucket string, pathPrefix string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		objectKey := strings.TrimPrefix(r.URL.Path, "/objects/")
+		objectKey := strings.TrimPrefix(r.URL.Path, pathPrefix)
 		if objectKey == "" {
 			http.Error(w, "object key required", http.StatusBadRequest)
 			return
@@ -354,8 +362,12 @@ func proxyGet(client *minio.Client, bucket string) http.HandlerFunc {
 }
 
 func proxyPost(client *minio.Client, bucket string) http.HandlerFunc {
+	return proxyPostWithPrefix(client, bucket, "/objects/")
+}
+
+func proxyPostWithPrefix(client *minio.Client, bucket string, pathPrefix string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		objectKey := strings.TrimPrefix(r.URL.Path, "/objects/")
+		objectKey := strings.TrimPrefix(r.URL.Path, pathPrefix)
 		if objectKey == "" {
 			http.Error(w, "object key required", http.StatusBadRequest)
 			return
@@ -402,6 +414,10 @@ func proxyPost(client *minio.Client, bucket string) http.HandlerFunc {
 
 func proxyPut(client *minio.Client, bucket string) http.HandlerFunc {
 	return proxyPost(client, bucket)
+}
+
+func proxyPutWithPrefix(client *minio.Client, bucket string, pathPrefix string) http.HandlerFunc {
+	return proxyPostWithPrefix(client, bucket, pathPrefix)
 }
 
 // resizeToFit scales img to fit within maxW×maxH while preserving aspect ratio.
@@ -459,6 +475,29 @@ func processRasterImage(data []byte, filename string) ([]byte, string) {
 	return buf.Bytes(), "image/jpeg"
 }
 
+// isKnownFormField checks if a form field key is a known/reserved field name
+func isKnownFormField(key string) bool {
+	knownFields := map[string]bool{
+		"userId":           true,
+		"folder":           true,
+		"imgPathsToDelete": true,
+		"imgPaths":         true,
+		"paths":            true,
+		"path":             true,
+		"imgPath":          true,
+		"ids":              true,
+		"id":               true,
+		"fileIds":          true,
+		"fileId":           true,
+		"newSources":       true,
+		"attachedFiles":    true,
+		"files":            true,
+		"file":             true,
+		"binary":           true,
+	}
+	return knownFields[key]
+}
+
 // Accepts multipart form: files (multiple), userId, folder, imgPathsToDelete (comma-separated, optional),
 // imgPaths (comma-separated, optional), ids (comma-separated, optional), or imgPath/id (singular). When imgPaths and ids are provided
 // in same order as files, they are used as object paths; otherwise a new filename is generated.
@@ -505,15 +544,113 @@ func uploadImagesToMinioServer(client *minio.Client, bucket string, folderPrefix
 		}
 
 		var imgPaths []string
-		if imgPathsStr != "" {
+		var pathById map[string]string      // map from file id to path
+		var pathByFilename map[string]string // map from original filename to target path
+		var idById map[string]string        // map from file id to id (for response)
+		var orderedIds []string              // ordered list of ids from newSources for index matching
+		
+		// Build pathByFilename map from form values (filename -> target path mappings)
+		// FormData has entries like: "498d7930dc27f5d5c6877bccb102fd65.jpg" -> "eb000d27-a5cd-4994-b8ad-bebb9cbaa281/acdcd19e-27eb-4441-bada-5ee1012e7378.jpg"
+		pathByFilename = make(map[string]string)
+		if r.MultipartForm != nil && r.MultipartForm.Value != nil {
+			for key, values := range r.MultipartForm.Value {
+				// Check if key looks like a filename (has extension) and is not a known form field
+				if len(values) > 0 && !isKnownFormField(key) {
+					// Check if it's a filename by looking for common image extensions
+					lowerKey := strings.ToLower(key)
+					if strings.HasSuffix(lowerKey, ".jpg") || strings.HasSuffix(lowerKey, ".jpeg") ||
+						strings.HasSuffix(lowerKey, ".png") || strings.HasSuffix(lowerKey, ".gif") ||
+						strings.HasSuffix(lowerKey, ".svg") || strings.HasSuffix(lowerKey, ".webp") {
+						pathByFilename[key] = strings.TrimSpace(values[0])
+					}
+				}
+			}
+		}
+		
+		// Try newSources JSON first (e.g. { "newSources": [ { "id": "rc-upload-...", "path": "id/filename.jpg" }, ... ] })
+		if newSourcesStr := strings.TrimSpace(r.FormValue("newSources")); newSourcesStr != "" {
+			var payload struct {
+				NewSources []struct {
+					ID   string `json:"id"`
+					Path string `json:"path"`
+				} `json:"newSources"`
+			}
+			if err := json.Unmarshal([]byte(newSourcesStr), &payload); err == nil {
+				pathById = make(map[string]string)
+				idById = make(map[string]string)
+				for _, f := range payload.NewSources {
+					id := strings.TrimSpace(f.ID)
+					p := strings.TrimSpace(f.Path)
+					if id != "" && p != "" {
+						pathById[id] = p
+						idById[id] = id
+						orderedIds = append(orderedIds, id)
+						imgPaths = append(imgPaths, p) // Also add to imgPaths for index matching
+					}
+				}
+			}
+		}
+		// Try attachedFiles JSON (e.g. { "attachedFiles": [ { "id": "...", "path": "id/filename.jpg" }, ... ] })
+		if len(pathById) == 0 {
+			if attachedFilesStr := strings.TrimSpace(r.FormValue("attachedFiles")); attachedFilesStr != "" {
+				var payload struct {
+					AttachedFiles []struct {
+						ID   string `json:"id"`
+						Path string `json:"path"`
+					} `json:"attachedFiles"`
+				}
+				if err := json.Unmarshal([]byte(attachedFilesStr), &payload); err == nil {
+					pathById = make(map[string]string)
+					idById = make(map[string]string)
+					for _, f := range payload.AttachedFiles {
+						id := strings.TrimSpace(f.ID)
+						p := strings.TrimSpace(f.Path)
+						if id != "" && p != "" {
+							pathById[id] = p
+							idById[id] = id
+						} else if p != "" {
+							// Fallback: if no id, use path by index
+							imgPaths = append(imgPaths, p)
+						}
+					}
+				}
+			}
+		}
+		if len(imgPaths) == 0 && imgPathsStr != "" {
 			for _, p := range strings.Split(imgPathsStr, ",") {
 				p = strings.TrimSpace(p)
 				imgPaths = append(imgPaths, p)
 			}
-		} else if r.MultipartForm != nil && r.MultipartForm.Value != nil && r.MultipartForm.Value["imgPath"] != nil {
-			imgPaths = r.MultipartForm.Value["imgPath"]
-		} else if imgPathStr := strings.TrimSpace(r.FormValue("imgPath")); imgPathStr != "" {
-			imgPaths = []string{imgPathStr}
+		}
+		if len(imgPaths) == 0 {
+			if pathsStr := strings.TrimSpace(r.FormValue("paths")); pathsStr != "" {
+				for _, p := range strings.Split(pathsStr, ",") {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						imgPaths = append(imgPaths, p)
+					}
+				}
+			}
+		}
+		if len(imgPaths) == 0 && r.MultipartForm != nil && r.MultipartForm.Value != nil && r.MultipartForm.Value["path"] != nil {
+			for _, p := range r.MultipartForm.Value["path"] {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					imgPaths = append(imgPaths, p)
+				}
+			}
+		}
+		if len(imgPaths) == 0 {
+			if pathStr := strings.TrimSpace(r.FormValue("path")); pathStr != "" {
+				imgPaths = []string{pathStr}
+			}
+		}
+		if len(imgPaths) == 0 {
+			if r.MultipartForm != nil && r.MultipartForm.Value != nil && r.MultipartForm.Value["imgPath"] != nil {
+				imgPaths = r.MultipartForm.Value["imgPath"]
+			} else if imgPathStr := strings.TrimSpace(r.FormValue("imgPath")); imgPathStr != "" {
+				imgPaths = []string{imgPathStr}
+			}
 		}
 		var ids []string
 		if idsStr != "" {
@@ -537,8 +674,31 @@ func uploadImagesToMinioServer(client *minio.Client, bucket string, folderPrefix
 				fileHeaders = r.MultipartForm.File["binary"]
 			}
 		}
-		if len(fileHeaders) == 0 {
-			respondJSON(w, http.StatusInternalServerError, map[string]any{"msg": "kZenUploadImagesToMinioServer:no files"})
+
+		// Get file ids to match files with their paths
+		var fileIds []string
+		if fileIdsStr := strings.TrimSpace(r.FormValue("fileIds")); fileIdsStr != "" {
+			for _, id := range strings.Split(fileIdsStr, ",") {
+				id = strings.TrimSpace(id)
+				if id != "" {
+					fileIds = append(fileIds, id)
+				}
+			}
+		} else if r.MultipartForm != nil && r.MultipartForm.Value != nil && r.MultipartForm.Value["fileId"] != nil {
+			fileIds = r.MultipartForm.Value["fileId"]
+		}
+		// If we have orderedIds from newSources but no explicit fileIds, use orderedIds for matching
+		if len(fileIds) == 0 && len(orderedIds) > 0 {
+			fileIds = orderedIds
+		}
+
+		// If no files to upload and no files to delete, return success
+		if len(fileHeaders) == 0 && len(imgPathsToDelete) == 0 {
+			respondJSON(w, http.StatusOK, map[string]any{
+				"msg":      "No files to upload or delete",
+				"inserted": []map[string]string{},
+				"deleted":  []string{},
+			})
 			return
 		}
 
@@ -555,17 +715,43 @@ func uploadImagesToMinioServer(client *minio.Client, bucket string, folderPrefix
 		deletedPaths := make([]string, len(imgPathsToDelete))
 		var wg sync.WaitGroup
 
-		// Upload each file concurrently.
+		// Upload each file concurrently (only if there are files).
 		for i, fh := range fileHeaders {
 			wg.Add(1)
 			imgPath := ""
-			if i < len(imgPaths) {
+			fileId := ""
+			
+			// First priority: Match by filename (from formData filename -> path mappings)
+			// FormData has entries like: "498d7930dc27f5d5c6877bccb102fd65.jpg" -> "eb000d27-a5cd-4994-b8ad-bebb9cbaa281/acdcd19e-27eb-4441-bada-5ee1012e7378.jpg"
+			filename := fh.Filename
+			if p, ok := pathByFilename[filename]; ok {
+				imgPath = p
+			}
+			
+			// Second priority: Try to match by file id
+			if imgPath == "" && i < len(fileIds) && pathById != nil {
+				fileId = fileIds[i]
+				if p, ok := pathById[fileId]; ok {
+					imgPath = p
+				}
+			}
+			// Fallback to array index matching
+			if imgPath == "" && i < len(imgPaths) {
 				imgPath = imgPaths[i]
 			}
+			
 			id := ""
-			if i < len(ids) {
+			// Get id from idById map if available
+			if fileId != "" && idById != nil {
+				if mappedId, ok := idById[fileId]; ok {
+					id = mappedId
+				}
+			}
+			// Fallback to array index matching
+			if id == "" && i < len(ids) {
 				id = ids[i]
 			}
+			
 			go func(idx int, fh *multipart.FileHeader, imgPath, id string) {
 				defer wg.Done()
 
@@ -614,7 +800,7 @@ func uploadImagesToMinioServer(client *minio.Client, bucket string, folderPrefix
 					finalImgPath = imgPath
 					objectKey = path.Join(folder, imgPath)
 				} else {
-					fileName := fmt.Sprintf("%s_%s_%s%s", userId, uuid.New().String(), folder, ext)
+					fileName := fmt.Sprintf("%s_%s%s", userId, uuid.New().String(), ext)
 					finalImgPath = fileName
 					objectKey = path.Join(folder, fileName)
 				}
@@ -697,8 +883,12 @@ func respondJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func proxyDelete(client *minio.Client, bucket string) http.HandlerFunc {
+	return proxyDeleteWithPrefix(client, bucket, "/objects/")
+}
+
+func proxyDeleteWithPrefix(client *minio.Client, bucket string, pathPrefix string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		objectKey := strings.TrimPrefix(r.URL.Path, "/objects/")
+		objectKey := strings.TrimPrefix(r.URL.Path, pathPrefix)
 		if objectKey == "" {
 			http.Error(w, "object key required", http.StatusBadRequest)
 			return

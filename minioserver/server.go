@@ -54,7 +54,7 @@ func Run(cfg Config) error {
 	mux.HandleFunc("/health/", healthHandler)
 	mux.HandleFunc("/debug/list", debugList(client, cfg.Bucket))
 	/* kzen */
-	mux.HandleFunc(fmt.Sprintf("/%s-objects/", KZEN_STORAGE), objectsHandler(client, KZEN_STORAGE))
+	mux.HandleFunc(fmt.Sprintf("/%s-objects/", KZEN_STORAGE), objectsHandlerWithPrefix(client, KZEN_STORAGE, fmt.Sprintf("/%s-objects/", KZEN_STORAGE)))
 	mux.HandleFunc(fmt.Sprintf("/%s-upload-images", KZEN_STORAGE), uploadImagesToMinioServer(client, KZEN_STORAGE, "/kzen"))
 	mux.HandleFunc(fmt.Sprintf("/%s-debug-list", KZEN_STORAGE), debugList(client, KZEN_STORAGE))
 
