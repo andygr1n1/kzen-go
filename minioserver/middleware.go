@@ -18,6 +18,15 @@ func Chain(middlewares ...func(http.Handler) http.Handler) func(http.Handler) ht
 	}
 }
 
+// setCORSHeaders sets CORS headers so the server can be called from any origin (any UI).
+// Must be set on every response, including errors (e.g. 401), or the browser blocks the response.
+func setCORSHeaders(w http.ResponseWriter) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept, X-API-Key, Authorization, X-Requested-With")
+	w.Header().Set("Access-Control-Max-Age", "86400") // cache preflight 24h
+}
+
 func apiKeyMiddleware(apiKey string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -25,8 +34,12 @@ func apiKeyMiddleware(apiKey string) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-
-			// if GET request, no need to check api key
+			// OPTIONS = CORS preflight; must not require API key so any UI can preflight
+			if r.Method == http.MethodOptions {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// GET is typically used for public reads; no API key required
 			if r.Method == http.MethodGet {
 				next.ServeHTTP(w, r)
 				return
@@ -42,6 +55,7 @@ func apiKeyMiddleware(apiKey string) func(http.Handler) http.Handler {
 				}
 			}
 			if key != apiKey {
+				setCORSHeaders(w) // required so browser gets CORS headers on 401
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
 				w.Write([]byte(`{"error":"invalid or missing API key"}`))
@@ -54,9 +68,7 @@ func apiKeyMiddleware(apiKey string) func(http.Handler) http.Handler {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
+		setCORSHeaders(w)
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusNoContent)
 			return
