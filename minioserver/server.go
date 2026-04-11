@@ -9,6 +9,8 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+
+	mediahandlers "kzen-go/minioserver/media-handlers"
 )
 
 type Config struct {
@@ -55,7 +57,8 @@ func Run(cfg Config) error {
 	mux.HandleFunc("/debug/list", debugList(client, cfg.Bucket))
 	/* kzen */
 	mux.HandleFunc(fmt.Sprintf("/%s-objects/", KZEN_STORAGE), objectsHandlerWithPrefix(client, KZEN_STORAGE, fmt.Sprintf("/%s-objects/", KZEN_STORAGE)))
-	mux.HandleFunc(fmt.Sprintf("/%s-upload-images", KZEN_STORAGE), uploadImagesToMinioServer(client, KZEN_STORAGE, "/kzen"))
+	mux.HandleFunc(fmt.Sprintf("/%s-upload-images", KZEN_STORAGE), mediahandlers.UploadImagesToMinioServer(client, KZEN_STORAGE, "/kzen"))
+	mux.HandleFunc(fmt.Sprintf("/%s-upload-images-v2", KZEN_STORAGE), mediahandlers.UploadImagesToMinioServerV2(client, KZEN_STORAGE, "/kzen"))
 	mux.HandleFunc(fmt.Sprintf("/%s-debug-list", KZEN_STORAGE), debugList(client, KZEN_STORAGE))
 
 	// CORS must wrap the entire chain so 401 (and all other responses) include CORS headers.
