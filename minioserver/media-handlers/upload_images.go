@@ -8,7 +8,7 @@ import (
 	"image"
 	_ "image/gif"
 	"image/jpeg"
-	_ "image/png"
+	"image/png"
 	"io"
 	"log"
 	"mime/multipart"
@@ -21,6 +21,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 	xdraw "golang.org/x/image/draw"
+)
+
+const (
+	maxRasterEdgePx   = 4096
+	jpegEncodeQuality = 100
 )
 
 // resizeToFit scales img to fit within maxW×maxH while preserving aspect ratio.
@@ -54,28 +59,74 @@ func resizeToFit(img image.Image, maxW, maxH int) image.Image {
 	return dst
 }
 
-// processRasterImage decodes a raster image, resizes it to fit within 1920×1080
-// (without enlargement), and encodes it as JPEG (quality 100).
-// Falls back to JPEG-only (no resize) on resize error, or raw bytes on total failure.
-func processRasterImage(data []byte, filename string) ([]byte, string) {
-	img, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
-		log.Printf("uploadImages: decode %q failed: %v, uploading raw", filename, err)
-		return data, "application/octet-stream"
-	}
-
-	resized := resizeToFit(img, 1920, 1080)
-	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, resized, &jpeg.Options{Quality: 100}); err != nil {
-		log.Printf("uploadImages: jpeg encode %q failed: %v, trying without resize", filename, err)
-		buf.Reset()
-		// Fallback: encode original without resize
-		if err2 := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 100}); err2 != nil {
-			log.Printf("uploadImages: fallback encode %q also failed: %v, uploading raw", filename, err2)
-			return data, "application/octet-stream"
+func contentTypeForFormat(format, filename string) string {
+	switch format {
+	case "jpeg":
+		return "image/jpeg"
+	case "png":
+		return "image/png"
+	case "gif":
+		return "image/gif"
+	case "webp":
+		return "image/webp"
+	default:
+		switch strings.ToLower(path.Ext(filename)) {
+		case ".jpg", ".jpeg":
+			return "image/jpeg"
+		case ".png":
+			return "image/png"
+		case ".gif":
+			return "image/gif"
+		case ".webp":
+			return "image/webp"
+		default:
+			return "application/octet-stream"
 		}
 	}
-	return buf.Bytes(), "image/jpeg"
+}
+
+func encodeRasterImage(img image.Image, format string) ([]byte, string, error) {
+	var buf bytes.Buffer
+	switch format {
+	case "png":
+		if err := png.Encode(&buf, img); err != nil {
+			return nil, "", err
+		}
+		return buf.Bytes(), "image/png", nil
+	default:
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: jpegEncodeQuality}); err != nil {
+			return nil, "", err
+		}
+		return buf.Bytes(), "image/jpeg", nil
+	}
+}
+
+// processRasterImage returns original bytes when the image fits within maxRasterEdgePx.
+// Only downscales oversized images and preserves PNG when possible.
+func processRasterImage(data []byte, filename string) ([]byte, string) {
+	img, format, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		log.Printf("uploadImages: decode %q failed: %v, uploading raw", filename, err)
+		contentType := contentTypeForFormat("", filename)
+		if contentType == "application/octet-stream" {
+			contentType = http.DetectContentType(data)
+		}
+		return data, contentType
+	}
+
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	if w <= maxRasterEdgePx && h <= maxRasterEdgePx {
+		return data, contentTypeForFormat(format, filename)
+	}
+
+	resized := resizeToFit(img, maxRasterEdgePx, maxRasterEdgePx)
+	encoded, contentType, err := encodeRasterImage(resized, format)
+	if err != nil {
+		log.Printf("uploadImages: encode %q failed: %v, uploading raw", filename, err)
+		return data, contentTypeForFormat(format, filename)
+	}
+	return encoded, contentType
 }
 
 // isKnownFormField checks if a form field key is a known/reserved field name
