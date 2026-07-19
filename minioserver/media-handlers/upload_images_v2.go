@@ -64,6 +64,7 @@ func objectKeyFromDeleteInput(raw string, folderPrefix string) string {
 	if after, ok := strings.CutPrefix(p, kzenStorageObjectsPrefix); ok {
 		p = after
 	}
+	p = rewriteLegacyUserMediaKey(p)
 	if strings.HasPrefix(p, "kzen/") {
 		return p
 	}
@@ -74,8 +75,38 @@ func objectKeyFromDeleteInput(raw string, folderPrefix string) string {
 	return path.Join(pref, p)
 }
 
+// rewriteLegacyUserMediaKey maps kzen/{userId}/media/... → kzen/users/{userId}/media/...
+func rewriteLegacyUserMediaKey(p string) string {
+	if p == "" || strings.HasPrefix(p, "users/") || strings.Contains(p, "/users/") {
+		return p
+	}
+	const uuidLen = 36
+	tryRewrite := func(prefix string) (string, bool) {
+		rest := strings.TrimPrefix(p, prefix)
+		if len(rest) < uuidLen+len("/media/") {
+			return "", false
+		}
+		userID := rest[:uuidLen]
+		after := rest[uuidLen:]
+		if !strings.HasPrefix(after, "/media/") {
+			return "", false
+		}
+		if strings.Count(userID, "-") != 4 {
+			return "", false
+		}
+		return prefix + "users/" + userID + after, true
+	}
+	if out, ok := tryRewrite("kzen/"); ok {
+		return out
+	}
+	if out, ok := tryRewrite(""); ok {
+		return out
+	}
+	return p
+}
+
 // UploadImagesToMinioServerV2 accepts multipart like the legacy handler, but:
-// - Does not require userId/folder; each file's target path is the full segment after folderPrefix (e.g. userId/media/.../file.jpeg).
+// - Does not require userId/folder; each file's target path is the full segment after folderPrefix (e.g. users/userId/media/.../file.jpeg).
 // - Form field deletedSources (comma-separated) replaces imgPathsToDelete; values may be full URLs or bare paths (see objectKeyFromDeleteInput).
 // - Missing path for an uploaded file returns 400 (no UUID fallback).
 func UploadImagesToMinioServerV2(client *minio.Client, bucket string, folderPrefix string) http.HandlerFunc {
