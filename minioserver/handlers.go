@@ -288,9 +288,6 @@ func debugList(client objectLister, bucket string) http.HandlerFunc {
 	}
 }
 
-const statRetries = 3
-const statRetryDelay = 50 * time.Millisecond
-
 func proxyGet(client *minio.Client, bucket string) http.HandlerFunc {
 	return proxyGetWithPrefix(client, bucket, "/objects/")
 }
@@ -306,38 +303,19 @@ func proxyGetWithPrefix(client *minio.Client, bucket string, pathPrefix string) 
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
-		// StatObject can intermittently return "Access Denied" under concurrent load.
-		// Retry a few times before failing.
-		var info minio.ObjectInfo
-		var err error
-		for attempt := 0; attempt < statRetries; attempt++ {
-			info, err = client.StatObject(ctx, bucket, objectKey, minio.StatObjectOptions{})
-			if err == nil {
-				break
-			}
-			if !strings.Contains(err.Error(), "Access Denied") {
-				break
-			}
-			if attempt < statRetries-1 {
-				time.Sleep(statRetryDelay)
-			}
-		}
-		if err != nil {
-			log.Printf("stat object %q bucket=%q: %v", objectKey, bucket, err)
-			w.Header().Set("X-MinIO-Error", err.Error())
-			if strings.Contains(err.Error(), "does not exist") {
-				http.Error(w, "object not found", http.StatusNotFound)
-				return
-			}
-			http.Error(w, "failed to get object info", http.StatusInternalServerError)
-			return
-		}
-
-		obj, err := client.GetObject(ctx, bucket, objectKey, minio.GetObjectOptions{})
+		// Prefer Core.GetObject over StatObject+GetObject: StatObject issues a HEAD,
+		// which MinIO/CDN often rejects with Access Denied while GET still works.
+		core := minio.Core{Client: client}
+		obj, info, _, err := core.GetObject(ctx, bucket, objectKey, minio.GetObjectOptions{})
 		if err != nil {
 			log.Printf("GET %q bucket=%q err: %v", objectKey, bucket, err)
 			w.Header().Set("X-MinIO-Error", err.Error())
-			http.Error(w, "object not found", http.StatusNotFound)
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "does not exist") || strings.Contains(errMsg, "The specified key does not exist") {
+				http.Error(w, "object not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "failed to get object", http.StatusInternalServerError)
 			return
 		}
 		defer obj.Close()
@@ -345,7 +323,12 @@ func proxyGetWithPrefix(client *minio.Client, bucket string, pathPrefix string) 
 		if info.ContentType != "" {
 			w.Header().Set("Content-Type", info.ContentType)
 		}
-		w.Header().Set("Content-Length", fmtSize(info.Size))
+		if info.Size >= 0 {
+			w.Header().Set("Content-Length", fmtSize(info.Size))
+		}
+		if r.Method == http.MethodHead {
+			return
+		}
 
 		if _, err := io.Copy(w, obj); err != nil {
 			log.Printf("stream object %q: %v", objectKey, err)
