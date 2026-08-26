@@ -8,6 +8,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -325,6 +326,15 @@ func proxyGetWithPrefix(client *minio.Client, bucket string, pathPrefix string) 
 		}
 		if info.Size >= 0 {
 			w.Header().Set("Content-Length", fmtSize(info.Size))
+		}
+		// ?download=1 → force save (PDFs otherwise open inline in the browser).
+		if r.URL.Query().Get("download") != "" {
+			name := path.Base(objectKey)
+			name = strings.ReplaceAll(name, `"`, "")
+			if name == "" || name == "." || name == "/" {
+				name = "download"
+			}
+			w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 		}
 		if r.Method == http.MethodHead {
 			return

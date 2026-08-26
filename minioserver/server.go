@@ -60,6 +60,7 @@ func Run(cfg Config) error {
 	mux.HandleFunc(fmt.Sprintf("/%s-objects/", KZEN_STORAGE), objectsHandlerWithPrefix(client, KZEN_STORAGE, fmt.Sprintf("/%s-objects/", KZEN_STORAGE)))
 	mux.HandleFunc(fmt.Sprintf("/%s-upload-images", KZEN_STORAGE), mediahandlers.UploadImagesToMinioServer(client, KZEN_STORAGE, "/kzen"))
 	mux.HandleFunc(fmt.Sprintf("/%s-upload-images-v2", KZEN_STORAGE), mediahandlers.UploadImagesToMinioServerV2(client, KZEN_STORAGE, "/kzen"))
+	mux.HandleFunc(fmt.Sprintf("/%s-upload-files-v1", KZEN_STORAGE), mediahandlers.UploadFilesToMinioServerV1(client, KZEN_STORAGE, "/kzen"))
 	mux.HandleFunc(fmt.Sprintf("/%s-debug-list", KZEN_STORAGE), debugList(client, KZEN_STORAGE))
 	mux.HandleFunc("/v1/create-story-folder", createStoryFolderHandler(client, KZEN_STORAGE))
 	mux.HandleFunc("/v1/move-story-messages", movestorymessages.Handler(client, KZEN_STORAGE))
