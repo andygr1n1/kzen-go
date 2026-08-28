@@ -64,6 +64,7 @@ func Run(cfg Config) error {
 	mux.HandleFunc(fmt.Sprintf("/%s-debug-list", KZEN_STORAGE), debugList(client, KZEN_STORAGE))
 	mux.HandleFunc("/v1/create-story-folder", createStoryFolderHandler(client, KZEN_STORAGE))
 	mux.HandleFunc("/v1/move-story-messages", movestorymessages.Handler(client, KZEN_STORAGE))
+	mux.HandleFunc("/v1/copy-goal-media", copyGoalMediaHandler(client, KZEN_STORAGE))
 
 	// CORS must wrap the entire chain so 401 (and all other responses) include CORS headers.
 	handler := Chain(corsMiddleware, logMiddleware)(mux)

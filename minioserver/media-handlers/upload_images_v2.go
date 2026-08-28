@@ -76,8 +76,14 @@ func objectKeyFromDeleteInput(raw string, folderPrefix string) string {
 }
 
 // rewriteLegacyUserMediaKey maps kzen/{userId}/media/... → kzen/users/{userId}/media/...
+// Workspace media (workspaces/{id}/media/...) must never be rewritten to users/.
 func rewriteLegacyUserMediaKey(p string) string {
 	if p == "" || strings.HasPrefix(p, "users/") || strings.Contains(p, "/users/") {
+		return p
+	}
+	if strings.HasPrefix(p, "workspaces/") ||
+		strings.HasPrefix(p, "kzen/workspaces/") ||
+		strings.Contains(p, "/workspaces/") {
 		return p
 	}
 	const uuidLen = 36
