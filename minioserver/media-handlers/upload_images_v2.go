@@ -86,6 +86,11 @@ func rewriteLegacyUserMediaKey(p string) string {
 		strings.Contains(p, "/workspaces/") {
 		return p
 	}
+	if strings.HasPrefix(p, "comments/") ||
+		strings.HasPrefix(p, "kzen/comments/") ||
+		strings.Contains(p, "/comments/") {
+		return p
+	}
 	const uuidLen = 36
 	tryRewrite := func(prefix string) (string, bool) {
 		rest := strings.TrimPrefix(p, prefix)
